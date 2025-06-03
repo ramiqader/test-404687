@@ -1,0 +1,99 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --prefer-offline --no-audit --no-fund --legacy-peer-deps
+
+      - name: Build project
+        run: npm run build
+        env:
+          NODE_ENV: production
+          NEXT_TELEMETRY_DISABLED: 1
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Deploy to Cloudflare Workers
+        run: |
+          # Use a consistent project name based on repo name
+          PROJECT_NAME="${{ github.event.repository.name }}"
+          echo "⚡ Starting Workers deployment for project: $PROJECT_NAME"
+
+          # Check if out directory exists
+          if [ ! -d "./out" ]; then
+            echo "❌ Build output directory './out' not found"
+            ls -la
+            exit 1
+          fi
+
+          echo "📁 Build output directory contents:"
+          ls -la ./out
+
+          # Test Wrangler authentication
+          echo "🔐 Testing Wrangler authentication..."
+          wrangler whoami || echo "⚠️ Wrangler auth test failed"
+
+          # Deploy static assets to Cloudflare Workers
+          echo "⚡ Deploying static site to Cloudflare Workers..."
+          set -x  # Enable verbose output
+          wrangler deploy --assets=./out --name "$PROJECT_NAME" --compatibility-date=2024-01-01
+          DEPLOY_EXIT_CODE=$?
+          set +x  # Disable verbose output
+
+          if [ $DEPLOY_EXIT_CODE -eq 0 ]; then
+            # Get the actual deployment URL from Wrangler output
+            echo "🔍 Getting actual deployment URL..."
+
+            # Try to get the URL from wrangler status
+            ACTUAL_URL=$(wrangler deployments list --name "$PROJECT_NAME" --format json 2>/dev/null | jq -r '.[0].url // empty' 2>/dev/null || echo "")
+
+            if [ -z "$ACTUAL_URL" ]; then
+              # Fallback: construct URL with account subdomain
+              DEPLOYMENT_URL="https://$PROJECT_NAME.ramiqader1.workers.dev"
+            else
+              DEPLOYMENT_URL="$ACTUAL_URL"
+            fi
+
+            echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> $GITHUB_ENV
+            echo "✅ Workers deployment successful!"
+            echo "⚡ Live URL: $DEPLOYMENT_URL"
+            echo "📱 Project: $PROJECT_NAME"
+            echo "🌐 Running on Cloudflare's global edge network"
+          else
+            echo "❌ Workers deployment failed with exit code: $DEPLOY_EXIT_CODE"
+            echo "🔍 Checking Wrangler version and config..."
+            wrangler --version
+            echo "🔍 Environment variables:"
+            echo "CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:0:10}..."
+            echo "CLOUDFLARE_ACCOUNT_ID: $CLOUDFLARE_ACCOUNT_ID"
+            exit 1
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: 5j6n1prFRFxaw7xiQtxupMKNaXWiV92BNCy6oAKP
+          CLOUDFLARE_ACCOUNT_ID: e0e1b8aa9ce551bf0aa32d201480b568
+
+      - name: Deployment Summary
+        run: |
+          echo "## ⚡ Workers Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "**Live URL:** $DEPLOYMENT_URL" >> $GITHUB_STEP_SUMMARY
+          echo "**Project:** ${{ github.event.repository.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Platform:** Cloudflare Workers (Edge Runtime)" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
